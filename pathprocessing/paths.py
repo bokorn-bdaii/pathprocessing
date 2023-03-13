@@ -7,6 +7,8 @@ import cairo
 import qrcode
 import os
 import pickle
+import svgpathtools
+import potrace
 
 import numpy.typing as npt
 from typing import Union
@@ -206,23 +208,17 @@ class LinearPaths2D:
         # Note, this is the inverse of the common matrix.
         # This is because we rotate the points by multiplying
         # points @ R_inv, rather then the usual convention.
-        R_inv = np.array(
-            [[np.cos(theta), np.sin(theta)], [-np.sin(theta), np.cos(theta)]]
-        )
+        R_inv = np.array([[np.cos(theta), np.sin(theta)], [-np.sin(theta), np.cos(theta)]])
 
         min_x, min_y, _, _ = self.bbox
 
-        centered_paths = self.shift(
-            x=-min_x - self.width / 2, y=-min_y - self.height / 2
-        )
+        centered_paths = self.shift(x=-min_x - self.width / 2, y=-min_y - self.height / 2)
 
         rotated_paths = []
         for paths in centered_paths:
             rotated_paths.append(paths.dot(R_inv))
 
-        return LinearPaths2D(rotated_paths).shift(
-            min_x + self.width / 2, min_y + self.height / 2
-        )
+        return LinearPaths2D(rotated_paths).shift(min_x + self.width / 2, min_y + self.height / 2)
 
     def minimum_length(self, minimum_length: float = 0.0) -> "LinearPaths2D":
         """Filters paths by minimum length.
@@ -235,9 +231,7 @@ class LinearPaths2D:
             as long as the minimum_length.
         """
 
-        return LinearPaths2D(
-            list(filter(lambda path: _path_length(path) >= minimum_length, self._paths))
-        )
+        return LinearPaths2D(list(filter(lambda path: _path_length(path) >= minimum_length, self._paths)))
 
     def sorted(
         self,
@@ -291,10 +285,7 @@ class LinearPaths2D:
                 next_path_idx = np.argmin(distances)
                 next_end_path_idx = np.argmin(end_distances)
 
-                if (
-                    path_reversal
-                    and end_distances[next_end_path_idx] < distances[next_path_idx]
-                ):
+                if path_reversal and end_distances[next_end_path_idx] < distances[next_path_idx]:
                     # reverse path if end point is closer to reference point.
                     sorted_groups[-1].append(group[next_end_path_idx][::-1])
                     # update reference point.
@@ -348,9 +339,7 @@ class LinearPaths2D:
         return LinearPaths2D(self._paths + other._paths)
 
     @staticmethod
-    def hstack(
-        list_of_paths: list["LinearPaths2D"], offset: float = 0.0
-    ) -> "LinearPaths2D":
+    def hstack(list_of_paths: list["LinearPaths2D"], offset: float = 0.0) -> "LinearPaths2D":
         """Stacks paths objects horizontally.
 
         Does not zero paths before stacking.
@@ -372,9 +361,7 @@ class LinearPaths2D:
         return paths
 
     @staticmethod
-    def vstack(
-        list_of_paths: list["LinearPaths2D"], offset: float = 0.0
-    ) -> "LinearPaths2D":
+    def vstack(list_of_paths: list["LinearPaths2D"], offset: float = 0.0) -> "LinearPaths2D":
         """Stacks paths objects vertically.
 
         Does not zero paths before stacking.
@@ -396,6 +383,31 @@ class LinearPaths2D:
         return paths
 
     @staticmethod
+    def from_svg_path(svg_paths: list[svgpathtools.Path]) -> "LinearPaths2D":
+        """Takes SVG vector.
+
+        Approximates Bezier curve, arcs, etc. by taking
+        many points along the contour.
+
+        Args:
+            svg_paths: List of SVG Paths
+
+        Returns:
+            A LinearPaths2D object with the paths.
+        """
+        paths = []
+        # Need to find the continues sub paths.
+        for path in sum([path.continuous_subpaths() for path in svg_paths], []):
+            if path:
+                # Need to linearize the path.
+                linear_path = np.concatenate(
+                    [segment.point(np.linspace(0, 1, int(np.ceil(segment.length())))) for segment in path]
+                )
+                paths += [np.vstack([linear_path.real, linear_path.imag]).T]
+
+        return LinearPaths2D(paths).vflip()
+
+    @staticmethod
     def from_svg(file_name: str) -> "LinearPaths2D":
         """Reads vector paths from an SVG.
 
@@ -409,25 +421,42 @@ class LinearPaths2D:
             A LinearPaths2D object with the paths.
         """
         svg_paths, _ = svg2paths(file_name)
-        paths = []
-        # Need to find the continues sub paths.
-        for path in sum([path.continuous_subpaths() for path in svg_paths], []):
-            if path:
-                # Need to linearize the path.
-                linear_path = np.concatenate(
-                    [
-                        segment.point(np.linspace(0, 1, int(np.ceil(segment.length()))))
-                        for segment in path
-                    ]
-                )
-                paths += [np.vstack([linear_path.real, linear_path.imag]).T]
-
-        return LinearPaths2D(paths).vflip()
+        return LinearPaths2D.from_svg_path(svg_paths)
 
     @staticmethod
-    def from_string(
-        text: str, font: str = "Poddins", slant: str = "NORMAL", weight: str = "NORMAL"
-    ) -> "LinearPaths2D":
+    def from_sketch(img: npt.NDArray[float], threshold: float = 0.15) -> "LinearPaths2D":
+        """Creates a LinearPaths2D object from sketch image.
+
+        Args:
+            img: Single channel floating point image.
+            threshold: Minimum pixel value to trace
+        """
+        bmp = potrace.Bitmap(img > threshold)
+        trace_path = bmp.trace()
+
+        beziers = []
+
+        for curve in trace_path:
+            start_point = complex(*curve.start_point)
+            for segment in curve:
+                end_point = complex(*segment.end_point)
+
+                if segment.is_corner:
+                    c = complex(*segment.c)
+                    bezier = svgpathtools.QuadraticBezier(start_point, c, end_point)
+                else:
+                    c1 = complex(*segment.c1)
+                    c2 = complex(*segment.c2)
+                    bezier = svgpathtools.CubicBezier(start_point, c1, c2, end_point)
+                beziers.append(bezier)
+                start_point = end_point
+
+        svg_path = svgpathtools.Path(*beziers)
+        paths = LinearPaths2D.from_svg_path([svg_path])
+        return paths
+
+    @staticmethod
+    def from_string(text: str, font: str = "Poddins", slant: str = "NORMAL", weight: str = "NORMAL") -> "LinearPaths2D":
         """Creates a LinearPaths2D object from text.
 
         Args:
@@ -450,9 +479,7 @@ class LinearPaths2D:
             "BOLD": cairo.FONT_WEIGHT_BOLD,
         }
 
-        with cairo.SVGSurface(
-            _TEMP_FILE_NAME, len(text) * _FONT_SIZE, _FONT_SIZE + 2
-        ) as surface:
+        with cairo.SVGSurface(_TEMP_FILE_NAME, len(text) * _FONT_SIZE, _FONT_SIZE + 2) as surface:
             Context = cairo.Context(surface)
             Context.set_font_size(_FONT_SIZE)
 
@@ -471,9 +498,7 @@ class LinearPaths2D:
         return paths
 
     @staticmethod
-    def raster_image(
-        im: npt.NDArray[bool], height: float, stroke_size: float
-    ) -> "LinearPaths2D":
+    def raster_image(im: npt.NDArray[bool], height: float, stroke_size: float) -> "LinearPaths2D":
         """Rasters an bitmap image into a LinearPaths2D object.
 
         Rasters an image from top to bottom and switches the direction for each row.
@@ -490,9 +515,7 @@ class LinearPaths2D:
             A rasterized image as a LinearPaths2D object.
         """
         if len(im.shape) != 2:
-            raise Exception(
-                f"Bitmap is {len(im.shape)} dimensional. Must have two dimensions."
-            )
+            raise Exception(f"Bitmap is {len(im.shape)} dimensional. Must have two dimensions.")
 
         scaling_factor = height / (im.shape[0] - 1)
 
@@ -534,9 +557,7 @@ class LinearPaths2D:
         return LinearPaths2D(paths).vflip().zero()
 
     @staticmethod
-    def make_qrcode(
-        data: str, height: float, stroke_size: float, error_correction: str = "L"
-    ) -> "LinearPaths2D":
+    def make_qrcode(data: str, height: float, stroke_size: float, error_correction: str = "L") -> "LinearPaths2D":
         """Generates a rasterized QR Code path with the given data.
 
         Args:
@@ -563,9 +584,7 @@ class LinearPaths2D:
 
         allowed_error_correction_types = list(map_error_str_to_enum.keys())
         if error_correction not in allowed_error_correction_types:
-            raise Exception(
-                f"{error_correction} has to be one of the allowed types: {allowed_error_correction_types}"
-            )
+            raise Exception(f"{error_correction} has to be one of the allowed types: {allowed_error_correction_types}")
 
         # Generate a QR code.
         qr = qrcode.QRCode(
