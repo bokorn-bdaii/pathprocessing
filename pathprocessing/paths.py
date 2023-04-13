@@ -8,11 +8,9 @@ import qrcode
 import os
 import pickle
 import svgpathtools
-import potrace
 
 import numpy.typing as npt
 from typing import Union
-
 
 def _path_length(path):
     pairwise_distance = np.sqrt(np.sum(np.square(path[1:] - path[:-1]), axis=1))
@@ -430,38 +428,6 @@ class LinearPaths2D:
         """
         svg_paths, _ = svg2paths(file_name)
         return LinearPaths2D.from_svg_path(svg_paths)
-
-    @staticmethod
-    def from_sketch(img: npt.NDArray[float], threshold: float = 0.15) -> "LinearPaths2D":
-        """Creates a LinearPaths2D object from sketch image.
-
-        Args:
-            img: Single channel floating point image.
-            threshold: Minimum pixel value to trace
-        """
-        bmp = potrace.Bitmap(img > threshold)
-        trace_path = bmp.trace()
-
-        beziers = []
-
-        for curve in trace_path:
-            start_point = complex(*curve.start_point)
-            for segment in curve:
-                end_point = complex(*segment.end_point)
-
-                if segment.is_corner:
-                    c = complex(*segment.c)
-                    bezier = svgpathtools.QuadraticBezier(start_point, c, end_point)
-                else:
-                    c1 = complex(*segment.c1)
-                    c2 = complex(*segment.c2)
-                    bezier = svgpathtools.CubicBezier(start_point, c1, c2, end_point)
-                beziers.append(bezier)
-                start_point = end_point
-
-        svg_path = svgpathtools.Path(*beziers)
-        paths = LinearPaths2D.from_svg_path([svg_path])
-        return paths
 
     @staticmethod
     def from_string(text: str, font: str = "Poddins", slant: str = "NORMAL", weight: str = "NORMAL") -> "LinearPaths2D":
