@@ -62,17 +62,25 @@ class LinearPaths2D:
         # Get number of segments.
         self.number_of_segments = sum([len(path) - 1 for path in self._paths])
 
-    def viz(self, color: str = None) -> None:
+    def viz(self, color: str = None, axis=None) -> None:
         """Visualize paths.
 
         Args:
             color: If not set, will color every path differently.
                 Use standard matplotlib color names.
+            axis: Matplotlib axis to plot drawing on
         """
-        for path in self._paths:
-            plt.plot(path[:, 0], path[:, 1], color=color)
+        show_axis = False
+        if axis is None:
+            axis = plt.gca()
+            show_axis = True
 
-        plt.axis("equal")
+        for path in self._paths:
+            axis.plot(path[:, 0], path[:, 1], color=color)
+
+        axis.axis("equal")
+        if show_axis:
+            plt.show()
 
     def tolist(self) -> list[list]:
         """Returns a list of paths.
